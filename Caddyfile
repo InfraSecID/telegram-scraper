@@ -1,0 +1,7 @@
+# Caddy otomatis mengurus sertifikat HTTPS (Let's Encrypt) untuk domain di .env.
+# Kalau hanya butuh webhook Telegram, seluruh app tetap diproksi.
+# Untuk membatasi hanya jalur webhook, ganti blok di bawah dengan komentar di README.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

@@ -1,0 +1,955 @@
+openapi: 3.0.3
+info:
+  title: Telegram Scraper API
+  version: 1.0.0
+  description: |
+    REST API untuk menjalankan scraping berbasis konfigurasi YAML.
+
+    Autentikasi: header `x-api-key: <API_KEY>` atau `Authorization: Bearer <API_KEY>`.
+    Semua job dijalankan asynchronous; polling status lewat `GET /api/jobs/{id}`.
+servers:
+  - url: http://localhost:3000
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: Service sehat
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  uptimeSec:
+                    type: integer
+                  jobs:
+                    type: object
+                    additionalProperties:
+                      type: integer
+
+  /api/sources:
+    get:
+      summary: Daftar sumber dari folder config
+      responses:
+        '200':
+          description: Daftar sumber beserta error config (jika ada)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SourceSummary'
+                  errors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        file:
+                          type: string
+                        error:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/sources/{id}:
+    get:
+      summary: Detail konfigurasi satu sumber
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Konfigurasi lengkap
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source:
+                    $ref: '#/components/schemas/Source'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/scrape:
+    post:
+      summary: Jalankan job scraping dari sumber yang terdaftar
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScrapeRequest'
+      responses:
+        '202':
+          description: Job masuk antrian
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/scrape/adhoc:
+    post:
+      summary: Scrape URL bebas dengan selector (dilindungi filter SSRF)
+      description: |
+        Hanya menerima URL http/https yang mengarah ke IP publik. Redirect juga
+        divalidasi ulang. Aktifkan/nonaktifkan lewat env `ALLOW_ADHOC`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdhocRequest'
+      responses:
+        '202':
+          description: Job masuk antrian
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '400':
+          description: Validasi gagal atau URL diblokir SSRF guard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Endpoint ad-hoc dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/jobs:
+    get:
+      summary: Daftar job terakhir
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, running, succeeded, failed]
+      responses:
+        '200':
+          description: Daftar job
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/jobs/{id}:
+    get:
+      summary: Status satu job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Detail job
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  job:
+                    $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/jobs/{id}/results:
+    get:
+      summary: Ambil hasil job
+      description: Hanya tersedia setelah job berstatus `succeeded`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+      responses:
+        '200':
+          description: Hasil scrape
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultEnvelope'
+            text/csv:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Job belum selesai / hasil tidak tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/security/status:
+    get:
+      summary: Status scanner security
+      description: Menampilkan scope, tool yang tersedia, antrean, dan status pengiriman laporan.
+      parameters:
+        - name: refresh
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Paksa deteksi ulang tool.
+      responses:
+        '200':
+          description: Status scanner
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Modul security tidak aktif
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/security/tools:
+    get:
+      summary: Status tool security
+      parameters:
+        - name: refresh
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Daftar tool beserta versi dan error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  summary:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/security/scope:
+    get:
+      summary: Scope domain yang diizinkan
+      responses:
+        '200':
+          description: Scope scanner
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scope:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      allowedDomains:
+                        type: array
+                        items:
+                          type: string
+                      authorizationRequired:
+                        type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/security/scans:
+    get:
+      summary: Daftar scan security
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [queued, running, succeeded, failed, cancelled]
+      responses:
+        '200':
+          description: Daftar scan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SecurityScan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      summary: Mulai scan security
+      description: |
+        Scan hanya berjalan untuk target di `SECURITY_ALLOWED_DOMAINS`.
+        `confirmAuthorization` wajib `true` sebagai pernyataan bahwa pemanggil punya izin tertulis.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecurityScanRequest'
+      responses:
+        '202':
+          description: Scan masuk antrean
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scan:
+                    $ref: '#/components/schemas/SecurityScan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Target di luar scope / fitur nonaktif / scope kosong
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Sudah ada scan berjalan untuk host yang sama
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Cooldown atau antrean penuh
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/security/scans/{id}:
+    get:
+      summary: Detail scan security
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Scan, temuan, laporan, dan riwayat pengiriman
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  scan:
+                    $ref: '#/components/schemas/SecurityScan'
+                  findings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SecurityFinding'
+                  reports:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  deliveries:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/security/scans/{id}/report:
+    get:
+      summary: Unduh laporan scan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [md, markdown, json]
+            default: md
+      responses:
+        '200':
+          description: Laporan Markdown atau JSON
+          content:
+            text/markdown:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Scan belum selesai / laporan belum tersedia
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/security/scans/{id}/report/send:
+    post:
+      summary: Kirim laporan ke target via email
+      description: |
+        Hanya tersedia jika `SECURITY_REPORT_SEND=true` dan SMTP dikonfigurasi.
+        `confirmSend` wajib `true`. Pengiriman tidak pernah otomatis.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SecuritySendRequest'
+      responses:
+        '200':
+          description: Laporan terkirim
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delivery:
+                    type: object
+                    additionalProperties: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Pengiriman dinonaktifkan
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Scan belum selesai
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/security/scans/{id}/cancel:
+    post:
+      summary: Batalkan scan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Permintaan pembatalan diterima
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cancelled:
+                    type: boolean
+                  status:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Scan sudah selesai
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+
+  responses:
+    Unauthorized:
+      description: API key tidak valid / tidak dikirim
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource tidak ditemukan
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Payload tidak valid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+
+    Transform:
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+          required: [name]
+          properties:
+            name:
+              type: string
+
+    Field:
+      type: object
+      properties:
+        selector:
+          type: string
+        const: {}
+        attr:
+          type: string
+          description: text (default), html, outerHtml, atau nama atribut HTML
+        multiple:
+          type: boolean
+        raw:
+          type: boolean
+        default: {}
+        transforms:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transform'
+      description: Wajib punya `selector` atau `const`.
+
+    ScrapeRequest:
+      type: object
+      required: [sourceId]
+      additionalProperties: false
+      properties:
+        sourceId:
+          type: string
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        maxPages:
+          type: integer
+          minimum: 1
+          maximum: 50
+        delayMs:
+          type: integer
+          minimum: 0
+          maximum: 60000
+
+    AdhocRequest:
+      type: object
+      required: [url, listSelector, fields]
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+          format: uri
+        listSelector:
+          type: string
+        fields:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Field'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+        maxPages:
+          type: integer
+          minimum: 1
+          maximum: 20
+        delayMs:
+          type: integer
+          minimum: 0
+          maximum: 60000
+        respectRobots:
+          type: boolean
+        dedupeKey:
+          type: string
+
+    SourceSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        request:
+          type: object
+          properties:
+            url:
+              type: string
+            maxPages:
+              type: integer
+            delayMs:
+              type: integer
+        list:
+          type: object
+          properties:
+            selector:
+              type: string
+            limit:
+              type: integer
+        fields:
+          type: integer
+        detailEnabled:
+          type: boolean
+        maxItems:
+          type: integer
+
+    Source:
+      type: object
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        request:
+          type: object
+          additionalProperties: true
+        list:
+          type: object
+          additionalProperties: true
+        fields:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/Field'
+        dedupeKey:
+          type: string
+        maxItems:
+          type: integer
+
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+        sourceId:
+          type: string
+        sourceName:
+          type: string
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed]
+        params:
+          type: object
+          additionalProperties: true
+        origin:
+          type: string
+          enum: [api, telegram]
+        chatId:
+          type: string
+          nullable: true
+        itemsCount:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        hasResults:
+          type: boolean
+
+    ResultEnvelope:
+      type: object
+      properties:
+        job:
+          $ref: '#/components/schemas/Job'
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        meta:
+          type: object
+          additionalProperties: true
+
+    SecurityScanRequest:
+      type: object
+      required: [target, confirmAuthorization]
+      additionalProperties: false
+      properties:
+        target:
+          type: string
+          minLength: 3
+          maxLength: 2048
+          description: Domain atau URL target (harus berada di SECURITY_ALLOWED_DOMAINS).
+        profile:
+          type: string
+          enum: [quick, standard, deep]
+          default: standard
+        confirmAuthorization:
+          type: boolean
+          enum: [true]
+          description: Pernyataan bahwa pemanggil punya izin tertulis untuk menguji target.
+
+    SecuritySendRequest:
+      type: object
+      required: [confirmSend]
+      additionalProperties: false
+      properties:
+        to:
+          type: string
+          format: email
+          description: Penerima. Jika kosong, memakai SECURITY_REPORT_TO atau kontak security.txt.
+        confirmSend:
+          type: boolean
+          enum: [true]
+          description: Konfirmasi eksplisit untuk mengirim laporan.
+
+    SecurityFinding:
+      type: object
+      properties:
+        id:
+          type: string
+        scanId:
+          type: string
+        tool:
+          type: string
+        type:
+          type: string
+        category:
+          type: string
+        severity:
+          type: string
+          enum: [critical, high, medium, low, info]
+        title:
+          type: string
+        url:
+          type: string
+          nullable: true
+        parameter:
+          type: string
+          nullable: true
+        evidence:
+          type: string
+          nullable: true
+        cwe:
+          type: string
+          nullable: true
+        cve:
+          type: string
+          nullable: true
+        remediation:
+          type: string
+          nullable: true
+        reference:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    SecurityScan:
+      type: object
+      properties:
+        id:
+          type: string
+        target:
+          type: string
+        host:
+          type: string
+        profile:
+          type: string
+          enum: [quick, standard, deep]
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, cancelled]
+        origin:
+          type: string
+        findingsCount:
+          type: integer
+        summary:
+          type: object
+          additionalProperties:
+            type: integer
+        recon:
+          type: object
+          additionalProperties: true
+        warnings:
+          type: array
+          items:
+            type: string
+        toolRuns:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        error:
+          type: string
+          nullable: true
+        durationMs:
+          type: integer
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    SecurityStatus:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        scope:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            allowedDomains:
+              type: array
+              items:
+                type: string
+            authorizationRequired:
+              type: boolean
+            note:
+              type: string
+        profiles:
+          type: array
+          items:
+            type: string
+        reportSendEnabled:
+          type: boolean
+        smtpConfigured:
+          type: boolean
+        rateLimit:
+          type: integer
+        cooldownSeconds:
+          type: integer
+        active:
+          type: integer
+        queued:
+          type: integer
+        tools:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        toolSummary:
+          type: object
+          additionalProperties: true
+        reportsDir:
+          type: string

@@ -1,0 +1,50 @@
+# Contoh sumber publik untuk uji coba (boleh di-scrape).
+# Dokumentasi field & transform: lihat README.md.
+id: books-demo
+name: Books to Scrape (demo)
+description: Katalog buku demo publik — pagination lewat placeholder {page}.
+enabled: true
+
+request:
+  url: https://books.toscrape.com/catalogue/page-{page}.html
+  startPage: 1
+  maxPages: 3
+  delayMs: 900
+  timeoutMs: 15000
+
+list:
+  selector: article.product_pod
+  limit: 40
+
+fields:
+  title:
+    selector: h3 a
+    attr: title
+    transforms: [trim]
+
+  price:
+    selector: .price_color
+    transforms: [trim, { name: number }]
+
+  currency:
+    selector: .price_color
+    transforms:
+      - trim
+      - { name: regex, pattern: '^([^0-9]+)', group: 1 }
+
+  rating:
+    selector: p.star-rating
+    attr: class
+    transforms:
+      - { name: regex, pattern: 'star-rating ([A-Za-z]+)', group: 1 }
+
+  availability:
+    selector: .instock.availability
+    transforms: [collapseWhitespace]
+
+  link:
+    selector: h3 a
+    attr: href
+    transforms: [absoluteUrl]
+
+maxItems: 120

@@ -1,0 +1,58 @@
+# Demo pagination memakai nextSelector + enrichment halaman detail.
+# Halaman detail hanya diambil untuk beberapa item pertama (detail.maxItems).
+id: quotes-demo
+name: Quotes to Scrape (demo)
+description: Demo pagination "next" dan pengambilan data dari halaman detail.
+enabled: true
+
+request:
+  url: https://quotes.toscrape.com/
+  maxPages: 3
+  delayMs: 900
+  timeoutMs: 15000
+  nextSelector: li.next a
+
+list:
+  selector: div.quote
+  limit: 15
+
+fields:
+  quote:
+    selector: span.text
+    transforms: [trim]
+
+  author:
+    selector: small.author
+    transforms: [trim]
+
+  tags:
+    selector: a.tag
+    multiple: true
+
+  authorLink:
+    selector: a[href^="/author/"]
+    attr: href
+    transforms: [absoluteUrl]
+
+  # Field ini dipakai sebagai link halaman detail (detail.linkField).
+  link:
+    selector: a[href^="/author/"]
+    attr: href
+    transforms: [absoluteUrl]
+
+detail:
+  enabled: true
+  linkField: link
+  maxItems: 3
+  fields:
+    born:
+      selector: .author-born-date
+      transforms: [trim]
+    bornLocation:
+      selector: .author-born-location
+      transforms: [trim]
+    bio:
+      selector: .author-description
+      transforms: [collapseWhitespace]
+
+maxItems: 45
